@@ -25,7 +25,7 @@ netcdf_path = os.path.join(ROOT_DIR, 'data', 'aifs_forecast_heat_stress.nc')
 def load_data():
     try:
         # Load the dataset and compute daily parameters
-        ds = xr.open_dataset(netcdf_path, engine="netcdf4")
+        ds = xr.open_dataset(netcdf_path)
         
         # Compute daily aggregates
         min_2t = ds['2t'].resample(time='1D').min()
