@@ -1,0 +1,6 @@
+streamlit>=1.32.0
+plotly>=6.0.0
+xarray>=2023.1.0
+geopandas>=1.0.1
+pandas>=2.2.0
+numpy>=1.26.0
