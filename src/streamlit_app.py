@@ -5,8 +5,7 @@ import numpy as np
 import xarray as xr
 import geopandas as gpd
 import pandas as pd
-
-
+from datetime import datetime
 
 # Set page configuration
 st.set_page_config(layout="wide", page_title="Taluk-level Temperature Dashboard")
@@ -25,7 +24,8 @@ netcdf_path = os.path.join(ROOT_DIR, 'data', 'aifs_forecast_heat_stress.nc')
 def load_data():
     try:
         # Load the dataset and compute daily parameters
-        ds = xr.open_dataset(netcdf_path, engine=None)
+        # Try with no engine specified to let xarray choose automatically
+        ds = xr.open_dataset(netcdf_path)
         
         # Compute daily aggregates
         min_2t = ds['2t'].resample(time='1D').min()
@@ -44,6 +44,9 @@ def load_data():
         # Create date options
         date_options = [pd.to_datetime(t).strftime('%b%d') for t in times]
         
+        # Start date (first date in the dataset)
+        start_date = pd.to_datetime(times[0])
+        
         # Load taluk shapefile
         tal = gpd.read_file(shapefile_path)
         tal = tal.to_crs(epsg=4326)
@@ -61,7 +64,8 @@ def load_data():
             'lon': lon,
             'lat': lat,
             'date_options': date_options,
-            'taluk_data': tal
+            'taluk_data': tal,
+            'start_date': start_date
         }
     except Exception as e:
         st.error(f"Error loading data: {str(e)}")
@@ -103,8 +107,13 @@ def main():
         format_func=lambda i: data['date_options'][i]
     )
     
-    # Variable selector
-    st.sidebar.subheader("Select Variable(s)")
+    # Calculate and display lead days
+    selected_date = pd.to_datetime(data['times'][date_idx])
+    lead_days = (selected_date - data['start_date']).days
+    st.sidebar.info(f"Lead Days: {lead_days} days from start date ({data['start_date'].strftime('%b %d, %Y')})")
+    
+    # Variable selector - changed to radio buttons for single selection
+    st.sidebar.subheader("Select Variable")
     variables = {
         'max_2t': "Max Temperature",
         'min_2t': "Min Temperature", 
@@ -115,91 +124,86 @@ def main():
         'dtr': "Diurnal Temp Range"
     }
     
-    selected_vars = st.sidebar.multiselect(
-        "Variables",
+    selected_var = st.sidebar.radio(
+        "Variable",
         options=list(variables.keys()),
-        default=['max_2t'],
         format_func=lambda x: variables[x]
     )
     
     # Main content
-    if not selected_vars:
-        st.warning("Please select at least one variable.")
-        return
+    st.subheader(f"{variables[selected_var]} on {data['date_options'][date_idx]}")
     
-    # Create maps for each selected variable
-    for var in selected_vars:
-        st.subheader(f"{variables[var]} on {data['date_options'][date_idx]}")
-        
-        # Get data for the selected variable and date
-        if var == 'max_2t':
-            da = data['max_2t'].isel(time=date_idx)
-        elif var == 'min_2t':
-            da = data['min_2t'].isel(time=date_idx)
-        elif var == 'avg_2t':
-            da = data['avg_2t'].isel(time=date_idx)
-        elif var == 'avg_rh':
-            da = data['avg_rh'].isel(time=date_idx)
-        elif var == 'max_hi':
-            da = data['max_hi'].isel(time=date_idx)
-        elif var == 'avg_hi':
-            da = data['avg_hi'].isel(time=date_idx)
-        elif var == 'dtr':
-            da = data['dtr'].isel(time=date_idx)
-        else:
-            continue
+    # Get data for the selected variable and date
+    if selected_var == 'max_2t':
+        da = data['max_2t'].isel(time=date_idx)
+    elif selected_var == 'min_2t':
+        da = data['min_2t'].isel(time=date_idx)
+    elif selected_var == 'avg_2t':
+        da = data['avg_2t'].isel(time=date_idx)
+    elif selected_var == 'avg_rh':
+        da = data['avg_rh'].isel(time=date_idx)
+    elif selected_var == 'max_hi':
+        da = data['max_hi'].isel(time=date_idx)
+    elif selected_var == 'avg_hi':
+        da = data['avg_hi'].isel(time=date_idx)
+    elif selected_var == 'dtr':
+        da = data['dtr'].isel(time=date_idx)
 
-        # Create a meshgrid and flatten the data into a DataFrame
-        long_grid, lat_grid = np.meshgrid(data['lon'], data['lat'])
-        df = pd.DataFrame({
-            'lon': long_grid.flatten(),
-            'lat': lat_grid.flatten(),
-            'value': da.values.flatten()
-        }).dropna(subset=['value'])
-        
-        # Convert the DataFrame to a GeoDataFrame with point geometries
-        gdf_points = gpd.GeoDataFrame(
-            df,
-            geometry=gpd.points_from_xy(df.lon, df.lat),
-            crs='EPSG:4326'
-        )
-        
-        # Spatially join the points with the taluk polygons
-        tal = data['taluk_data']
-        joined = gpd.sjoin(gdf_points, tal, how='inner', predicate='within')
-        agg = joined.groupby('KGISTalukN')['value'].mean()
-        tal_agg = tal.merge(agg, left_on='KGISTalukN', right_index=True)
-        tal_agg['id'] = tal_agg['KGISTalukN']
-        geojson_data = tal_agg.__geo_interface__
-        
-        # Create a choropleth map using Plotly Express
-        fig = px.choropleth(
-            tal_agg,
-            geojson=geojson_data,
-            locations='id',
-            color='value',
-            featureidkey="properties.KGISTalukN",
-            color_continuous_scale='Spectral_r',
-        )
-        fig.update_geos(fitbounds="locations", visible=False)
-        fig.update_traces(marker_line_width=0)
-        
-        # Update layout
-        fig.update_layout(
-            margin={"r":0, "t":0, "l":0, "b":0},
-            height=600,
-            font=dict(size=16)
-        )
-        
-        # Update colorbar
-        fig.update_coloraxes(colorbar=dict(
-            title=variables[var],
-            title_font=dict(size=16),
-            tickfont=dict(size=14)
-        ))
-        
-        # Display the map
-        st.plotly_chart(fig, use_container_width=True)
+    # Create a meshgrid and flatten the data into a DataFrame
+    long_grid, lat_grid = np.meshgrid(data['lon'], data['lat'])
+    df = pd.DataFrame({
+        'lon': long_grid.flatten(),
+        'lat': lat_grid.flatten(),
+        'value': da.values.flatten()
+    }).dropna(subset=['value'])
+    
+    # Convert the DataFrame to a GeoDataFrame with point geometries
+    gdf_points = gpd.GeoDataFrame(
+        df,
+        geometry=gpd.points_from_xy(df.lon, df.lat),
+        crs='EPSG:4326'
+    )
+    
+    # Spatially join the points with the taluk polygons
+    tal = data['taluk_data']
+    joined = gpd.sjoin(gdf_points, tal, how='inner', predicate='within')
+    agg = joined.groupby('KGISTalukN')['value'].mean()
+    tal_agg = tal.merge(agg, left_on='KGISTalukN', right_index=True)
+    tal_agg['id'] = tal_agg['KGISTalukN']
+    geojson_data = tal_agg.__geo_interface__
+    
+    # Create a choropleth map using Plotly Express
+    fig = px.choropleth(
+        tal_agg,
+        geojson=geojson_data,
+        locations='id',
+        color='value',
+        featureidkey="properties.KGISTalukN",
+        color_continuous_scale='Spectral_r',
+    )
+    fig.update_geos(fitbounds="locations", visible=False)
+    fig.update_traces(marker_line_width=0)
+    
+    # Update layout to make map larger - 1500px by 1500px as requested
+    fig.update_layout(
+        margin={"r": 0, "t": 0, "l": 0, "b": 0},  # Remove margins
+        autosize=True,  # Automatically adjust size
+        height=800,  # Increase height
+        width=1400,   # Increase width to match screen width
+        font=dict(size=20)
+    )
+
+    
+    # Update colorbar
+    fig.update_coloraxes(colorbar=dict(
+        title=variables[selected_var],
+        title_font=dict(size=20),
+        tickfont=dict(size=18),
+        len=0.5  # Make colorbar longer
+    ))
+    
+    # Display the map
+    st.plotly_chart(fig, use_container_width=False)  # Changed to use_container_width=False to respect exact dimensions
 
 if __name__ == "__main__":
     main()
